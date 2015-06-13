@@ -1,0 +1,92 @@
+---
+title: "Automatic assessment of the quality of weight lifting excersise"
+author: "Hrafnkell Eiríksson <he@klaki.net>"
+date: "Saturday, June 13, 2015"
+output: html_document
+---
+
+# Overview
+
+Recently, "self measurement" of physical activity has gained popularity. Many wearable devices that track physical activity such as the [FitBit](https://www.fitbit.com/), [Samsung Gear](http://www.samsung.com/us/mobile/wearable-tech) have become available. Most of these devices help track the quantity of physical activity. 
+
+The quality of the activity or excerise is also important. This is especially true for sports where the wrong approach to performing excercise can lead to injury. Weight lifting is one such sport. Coaching or personal training is the traditional approach to preventing injury while learning to correctly perform an excercise. However not everybody has access to a coach. It is therefore interesting to study if an automatic system can be built to provide feedback on the quality of an excersise. 
+
+Velloso et. al. studied this in their report [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201) (reference 1). They recorded the movement of participants performing 10 repetitions of the Unilateral Dumbbell Biceps Curl using sensors attached to the participants at their waist, upper arm and forearm and also to the dumbbell. The sensors have 3 axis acceleration-, gyroscope- and magnetometers.
+
+This report documents a machine learning approach to automatically assess the quality of weight lifting excercise based on the sensor data from the Velloso et. al. report. We build an automatic classifier based on Random Forests that can notify the participant if the movement is being done correctly (class A) or wrongly and what type of error (class B to E).
+
+This report is a project in the [Data Science Specialization](https://www.coursera.org/specialization/jhudatascience/1) course [Practical Machine Learning](https://www.coursera.org/course/predmachlearn) offered by [Coursera](http://coursera.org/) and John Hopkins Bloomberg School of Public Health.
+
+# Data processing
+
+The data provided contains the raw time series measurements for from the 4 sensors: belt, arm, forearm and dumbbell. Each sensor has acceleration, gyroscope and magnetometer data in 3 spatial dimensions. The acceleration, gyroscope and magnetometere data have x, y and z cooridnates for each time sample. For each sensor we also have a position as Euler angles as well as the magnitute of the acceleration of that sensor or a total of 13 timeseries for each sensor. This gives 52 continously measured variables.
+
+The dataset also contains a number of additional derived features (101 derived features). They are calculated as various summary statistics of the time series measurements calculated over time windows. Since they are summary statistics they don't have values for every measurement. Most of the rows of these columns in the dataset are therefore NA. We choose to drop these columns since we don't have access to summary statistics in the testing data set. 
+
+Additional 7 columns are "housekeeping" data such as the name of the participant, timestamps of measurements and variables for tracking the windows the summary statistics are calculated over. It is important to drop these variables from the dataset before training. Otherwise the learned model might learn the time when the participant was doing the right or wrong version of the excersise.
+
+## Data preparation
+Load libraries: caret for machine learning and dplyr for manipulating the data.
+```{r, message=FALSE,warning=FALSE}
+library(caret)
+library(dplyr)
+library(doParallel)
+cl <- makeCluster(detectCores()/2)
+registerDoParallel(cl)
+set.seed(1235)
+```
+
+Reading the data
+```{r, cache=TRUE}
+training<-read.csv('data/pml-training.csv')
+testing<-read.csv('data/pml-testing.csv')
+```
+
+Select only the columns that correspond to the original measurement data. We leave out the derived summary statistics. We only have values for the original measurement data in the testing data set. We do thos by only using columns without NA after removing the housekeeping data from the testing data set. That way we ensure we only train the classifier on variables we have access to.
+```{r, cache=TRUE}
+testing<-testing%>%
+  select(-X, -user_name, -raw_timestamp_part_1, -raw_timestamp_part_2, -cvtd_timestamp, -new_window, -num_window, -problem_id)
+testing<-testing%>%
+  select(one_of(colnames(testing[,sapply(testing, function(x) sum(is.na(x))==0)])))
+
+tr<-training %>% filter(new_window=="no") %>% select(one_of(colnames(testing)), classe)
+tst<-testing 
+dim(tr)
+```
+
+# Model building
+
+We split the training data into 70% partition for creating our model and 30% for estimating the out of sample performance of our model. We then train a model on the 70% partition. The model type is a random forest. We use a 5 fold cross validation scheme and let the model use 20% of the available data for each round. This is to limit the computation overhead.
+```{r,cache=TRUE,message=FALSE,warning=FALSE}
+inTrain<-createDataPartition(y=tr$classe, p=0.7, list=F)
+trctrl<-trainControl(method="cv",number=5,p=0.2)
+trainingData<-tr[inTrain,]
+testingData<-tr[-inTrain,]
+mdl<-train(classe~.,data=trainingData,model="rf",trainControl=trctrl)
+```
+
+# Results
+
+We finally estimate the out-of-sample performance using the reserved 30% of the training data. The confusion matrix is shown below along with the accuracy.
+```{r, cache=TRUE}
+cm<-confusionMatrix(predict(mdl,newdata=testingData),testingData$classe)
+cm$table
+cm$overal[1]
+```
+
+Finally we calculate our prediction of the provided test data
+```{r, cache=TRUE}
+predict(mdl,tst)
+```
+
+# Discussion
+
+The model shows quite good performance on judging if the participant is performing the weight lifting excercise correctly or not. If this was being used in a real system the feedback would be instantanios since the model only uses the continously measured data.
+
+However it is likely this is artificially high accuracy. Since we have access to high number of samples for each observation it is likely the trained model is basing the classification on similar values for each participant. 
+
+It might be beneficial to base the model on summary statistics instead of the instantainous measurements. This might lead to more general model. Leaving out a few participants for training and then testing on totally unseen participants might also be a more realistic approach.
+
+# References
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/har#ixzz3cw9trcCY). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
